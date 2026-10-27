@@ -185,3 +185,4 @@ This firmware and the companion daemon are provided as-is, with no warranty of a
 ## License
 
 [WTFPL](LICENSE). Do What The F*ck You Want To Public License.
+    build trigger
