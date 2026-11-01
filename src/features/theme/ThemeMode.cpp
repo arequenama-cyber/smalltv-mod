@@ -20,15 +20,15 @@ constexpr uint32_t WEATHER_REFRESH_MS = 60000UL;
 constexpr uint32_t PAGE_DWELL_MS = 10000UL;
 
 const char* NIGHTSCOUT_URL =
-  "https://elisa-nightscout.onrender.com/api/v2/properties/bgnow,delta,direction";
+    "https://elisa-nightscout.onrender.com/api/v2/properties/bgnow,delta,direction";
 
 const char* WEATHER_URL =
-  "https://api.open-meteo.com/v1/forecast"
-  "?latitude=41.26823&longitude=2.01890"
-  "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
-  "precipitation,wind_speed_10m"
-  "&temperature_unit=celsius&wind_speed_unit=kmh"
-  "&timezone=Europe%2FMadrid";
+    "https://api.open-meteo.com/v1/forecast"
+    "?latitude=41.26823&longitude=2.01890"
+    "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
+    "precipitation,wind_speed_10m"
+    "&temperature_unit=celsius&wind_speed_unit=kmh"
+    "&timezone=Europe%2FMadrid";
 
 
 bool getJson(
@@ -41,11 +41,25 @@ bool getJson(
     return false;
   }
 
+#if defined(SMALLTV_FAMILY_ESP8266)
 
   /*
-     Fem servir exactament el mateix sistema TLS
-     que ja utilitza la resta del firmware.
+     SMALLTV ULTRA / ESP8266
+
+     BearSSL necessita un bloc de memòria contigu prou gran.
+     Si no el tenim, no intentem el handshake i evitem
+     excepcions/reinicis.
   */
+
+  if (ESP.getFreeHeap() < 18000 ||
+      platformMaxFreeBlock() < 12000) {
+
+    error = "low heap";
+    return false;
+  }
+
+#endif
+
 
   std::unique_ptr<NetClient> client(
       platformMakeSecureClient(
@@ -53,6 +67,7 @@ bool getJson(
           nullptr,
           512,
           false));
+
 
   if (!client) {
     error = "TLS client failed";
@@ -62,22 +77,13 @@ bool getJson(
 
   HTTPClient http;
 
-  http.setTimeout(12000);
-
+  http.setTimeout(10000);
   http.setReuse(false);
 
-
   /*
-     IMPORTANT:
-     HTTP/1.0 evita que Nightscout / Render
-     i Open-Meteo ens enviïn el JSON amb
-     transferència "chunked".
-
-     ArduinoJson llegeix directament el stream,
-     i el chunked era la causa més probable
-     del "sense dades".
+     HTTP/1.0 evita transferència chunked.
+     ArduinoJson pot llegir directament el stream.
   */
-
   http.useHTTP10(true);
 
 
@@ -86,6 +92,7 @@ bool getJson(
           String(url))) {
 
     error = "connect failed";
+    client.reset();
     return false;
   }
 
@@ -93,11 +100,6 @@ bool getJson(
   http.addHeader(
       "Accept",
       "application/json");
-
-
-  /*
-     User-Agent no buit.
-  */
 
   http.setUserAgent(
       "smalltv-mod");
@@ -122,6 +124,11 @@ bool getJson(
         "HTTP " + String(code);
 
     http.end();
+    client.reset();
+
+#if defined(SMALLTV_FAMILY_ESP8266)
+    yield();
+#endif
 
     return false;
   }
@@ -134,6 +141,19 @@ bool getJson(
 
 
   http.end();
+  client.reset();
+
+
+#if defined(SMALLTV_FAMILY_ESP8266)
+
+  /*
+     Donem temps a BearSSL/WiFi per alliberar memòria.
+  */
+
+  yield();
+  delay(5);
+
+#endif
 
 
   if (e) {
@@ -147,9 +167,9 @@ bool getJson(
 
 
   error = "";
-
   return true;
 }
+
 
 
 void printAt(
@@ -161,13 +181,11 @@ void printAt(
     uint16_t color) {
 
   gfx->setTextSize(size);
-
   gfx->setTextColor(color);
-
   gfx->setCursor(x, y);
-
   gfx->print(text);
 }
+
 
 
 void centered(
@@ -185,6 +203,7 @@ void centered(
       size,
       color);
 }
+
 
 
 bool localNow(
@@ -216,11 +235,37 @@ void ThemeMode::begin(
   pageSinceMs_ =
       millis();
 
+
+#if defined(SMALLTV_FAMILY_ESP8266)
+
+  /*
+     ULTRA:
+     primer Nightscout.
+     El temps comença bastant després.
+     Això evita dos handshakes TLS gairebé seguits.
+  */
+
+  nextGlucoseMs_ =
+      millis() + 2000;
+
+  nextWeatherMs_ =
+      millis() + 18000;
+
+#else
+
+  /*
+     PRO / ESP32:
+     té molta més RAM.
+  */
+
   nextGlucoseMs_ =
       millis();
 
   nextWeatherMs_ =
       millis();
+
+#endif
+
 
   lastClockMinute_ =
       0xFFFFFFFF;
@@ -237,11 +282,23 @@ void ThemeMode::begin(
 void ThemeMode::invalidate(
     const Settings&) {
 
+#if defined(SMALLTV_FAMILY_ESP8266)
+
+  nextGlucoseMs_ =
+      millis() + 1500;
+
+  nextWeatherMs_ =
+      millis() + 18000;
+
+#else
+
   nextGlucoseMs_ =
       millis();
 
   nextWeatherMs_ =
       millis();
+
+#endif
 
   needRender_ =
       true;
@@ -344,7 +401,6 @@ void ThemeMode::service(
 void ThemeMode::fetchGlucose() {
 
   JsonDocument doc;
-
   String err;
 
 
@@ -382,8 +438,7 @@ void ThemeMode::fetchGlucose() {
         true;
 
     error_ =
-        "Nightscout: "
-        "bgnow.last missing";
+        "Nightscout: bgnow.last missing";
 
     if (
         page_ ==
@@ -470,7 +525,6 @@ void ThemeMode::fetchGlucose() {
 void ThemeMode::fetchWeather() {
 
   JsonDocument doc;
-
   String err;
 
 
@@ -509,8 +563,7 @@ void ThemeMode::fetchWeather() {
         true;
 
     error_ =
-        "Weather: "
-        "current missing";
+        "Weather: current missing";
 
     if (
         page_ ==
@@ -607,10 +660,6 @@ int8_t ThemeMode::trendArrow() const {
       glucose_.direction);
 
 
-  /*
-     PUJADA
-  */
-
   if (
       d == "DoubleUp" ||
       d == "SingleUp" ||
@@ -619,10 +668,6 @@ int8_t ThemeMode::trendArrow() const {
     return +1;
   }
 
-
-  /*
-     BAIXADA
-  */
 
   if (
       d == "DoubleDown" ||
@@ -633,23 +678,10 @@ int8_t ThemeMode::trendArrow() const {
   }
 
 
-  /*
-     Flat / NONE / desconegut
-     = OK
-  */
-
   return 0;
 }
 
 
-
-/*
-   DIRECCIÓ GLUCOSA
-
-   +1 = ↑
-    0 = OK
-   -1 = ↓
-*/
 
 void ThemeMode::drawArrow(
     int8_t dir,
@@ -678,50 +710,39 @@ void ThemeMode::drawArrow(
       9;
 
 
-
   /*
-     PUJADA ↑
+     ↑
   */
 
   if (dir > 0) {
 
     const int tipY =
-        cy
-        -
-        shaftLen / 2
-        -
+        cy -
+        shaftLen / 2 -
         headLen;
 
 
     const int baseY =
-        tipY
-        +
+        tipY +
         headLen;
 
 
     gfx->fillRect(
         cx -
         shaftTh / 2,
-
         baseY,
-
         shaftTh,
-
         shaftLen,
-
         color);
 
 
     gfx->fillTriangle(
         cx,
         tipY,
-
         cx - headHalf,
         baseY,
-
         cx + headHalf,
         baseY,
-
         color);
 
 
@@ -729,58 +750,45 @@ void ThemeMode::drawArrow(
   }
 
 
-
   /*
-     BAIXADA ↓
-     Mateix estil que la pujada.
+     ↓
   */
 
   if (dir < 0) {
 
     const int tipY =
-        cy
-        +
-        shaftLen / 2
-        +
+        cy +
+        shaftLen / 2 +
         headLen;
 
 
     const int baseY =
-        tipY
-        -
+        tipY -
         headLen;
 
 
     gfx->fillRect(
         cx -
         shaftTh / 2,
-
         cy -
         shaftLen / 2,
-
         shaftTh,
-
         shaftLen,
-
         color);
 
 
     gfx->fillTriangle(
         cx,
         tipY,
-
         cx - headHalf,
         baseY,
-
         cx + headHalf,
         baseY,
-
         color);
 
 
     return;
   }
-
 
 
   /*
@@ -790,15 +798,12 @@ void ThemeMode::drawArrow(
   gfx->setTextColor(
       color);
 
-
   gfx->setTextSize(
       3);
-
 
   gfx->setCursor(
       cx - 18,
       cy - 11);
-
 
   gfx->print(
       "OK");
@@ -811,23 +816,15 @@ void ThemeMode::render() {
   switch (page_) {
 
     case PAGE_GLUCOSE:
-
       renderGlucose();
-
       break;
-
 
     case PAGE_WEATHER:
-
       renderWeather();
-
       break;
 
-
     case PAGE_CHRISTMAS:
-
       renderChristmas();
-
       break;
   }
 }
@@ -856,7 +853,6 @@ void ThemeMode::renderGlucose() {
       C_GRAY);
 
 
-
   if (!glucose_.valid) {
 
     centered(
@@ -881,7 +877,6 @@ void ThemeMode::renderGlucose() {
   }
 
 
-
   char value[8];
 
 
@@ -892,11 +887,9 @@ void ThemeMode::renderGlucose() {
       glucose_.value);
 
 
-
   const uint16_t vc =
       glucoseColor(
           glucose_.value);
-
 
 
   centered(
@@ -910,14 +903,12 @@ void ThemeMode::renderGlucose() {
       vc);
 
 
-
   centered(
       gfx,
       "mg/dL",
       113,
       2,
       C_GRAY);
-
 
 
   printAt(
@@ -929,13 +920,11 @@ void ThemeMode::renderGlucose() {
       C_WHITE);
 
 
-
   drawArrow(
       trendArrow(),
       174,
       170,
       C_WHITE);
-
 
 
   struct tm t{};
@@ -961,7 +950,6 @@ void ThemeMode::renderGlucose() {
         &t);
 
 
-
     printAt(
         gfx,
         wd,
@@ -969,7 +957,6 @@ void ThemeMode::renderGlucose() {
         216,
         2,
         C_GRAY);
-
 
 
     printAt(
@@ -980,7 +967,6 @@ void ThemeMode::renderGlucose() {
         2,
         C_WHITE);
   }
-
 
 
   if (glucose_.error) {
@@ -1009,127 +995,17 @@ void ThemeMode::renderWeather() {
       C_BLACK);
 
 
+  /*
+     Pantalla inspirada en el weather clock
+     original del SmallTV Ultra.
+  */
+
   centered(
       gfx,
       "GAVA MAR",
-      8,
+      6,
       2,
       C_GRAY);
-
-
-
-  if (!weather_.valid) {
-
-    centered(
-        gfx,
-        "--",
-        64,
-        6,
-        C_WHITE);
-
-
-    centered(
-        gfx,
-        weather_.error
-            ? "sense dades"
-            : "carregant...",
-        142,
-        2,
-        C_GRAY);
-
-
-    return;
-  }
-
-
-
-  char buf[24];
-
-
-
-  snprintf(
-      buf,
-      sizeof(buf),
-      "%.1f C",
-      weather_.temp);
-
-
-  centered(
-      gfx,
-      buf,
-      52,
-      gfxFitSize(
-          buf,
-          232,
-          6),
-      C_WHITE);
-
-
-
-  snprintf(
-      buf,
-      sizeof(buf),
-      "Sens %.1f C",
-      weather_.feels);
-
-
-  centered(
-      gfx,
-      buf,
-      118,
-      2,
-      C_GRAY);
-
-
-
-  snprintf(
-      buf,
-      sizeof(buf),
-      "Hum %d%%",
-      weather_.humidity);
-
-
-  printAt(
-      gfx,
-      buf,
-      16,
-      154,
-      2,
-      C_WHITE);
-
-
-
-  snprintf(
-      buf,
-      sizeof(buf),
-      "Vent %.0f",
-      weather_.wind);
-
-
-  printAt(
-      gfx,
-      buf,
-      136,
-      154,
-      2,
-      C_WHITE);
-
-
-
-  snprintf(
-      buf,
-      sizeof(buf),
-      "Pluja %.1f mm",
-      weather_.rain);
-
-
-  centered(
-      gfx,
-      buf,
-      184,
-      2,
-      C_GRAY);
-
 
 
   struct tm t{};
@@ -1138,6 +1014,7 @@ void ThemeMode::renderWeather() {
   if (localNow(t)) {
 
     char hm[8];
+    char dateLine[24];
 
 
     strftime(
@@ -1147,14 +1024,161 @@ void ThemeMode::renderWeather() {
         &t);
 
 
+    /*
+       Hora gran, protagonista.
+    */
+
     centered(
         gfx,
         hm,
-        216,
+        34,
+        gfxFitSize(
+            hm,
+            230,
+            7),
+        C_WHITE);
+
+
+    static const char* DAYS[] = {
+      "DG", "DL", "DT", "DC",
+      "DJ", "DV", "DS"
+    };
+
+
+    snprintf(
+        dateLine,
+        sizeof(dateLine),
+        "%s  %02d/%02d",
+        DAYS[t.tm_wday],
+        t.tm_mday,
+        t.tm_mon + 1);
+
+
+    centered(
+        gfx,
+        dateLine,
+        102,
         2,
-        C_DGRAY);
+        C_GRAY);
+
+  } else {
+
+    centered(
+        gfx,
+        "--:--",
+        34,
+        6,
+        C_WHITE);
   }
 
+
+  /*
+     Encara sense dades meteorològiques:
+     mantenim el rellotge visible.
+  */
+
+  if (!weather_.valid) {
+
+    centered(
+        gfx,
+        "temps sense dades",
+        152,
+        2,
+        C_GRAY);
+
+    return;
+  }
+
+
+  char temp[16];
+  char feels[24];
+  char hum[18];
+  char wind[18];
+  char rain[20];
+
+
+  snprintf(
+      temp,
+      sizeof(temp),
+      "%.1f C",
+      weather_.temp);
+
+
+  /*
+     Temperatura gran sota el rellotge.
+  */
+
+  centered(
+      gfx,
+      temp,
+      128,
+      gfxFitSize(
+          temp,
+          220,
+          4),
+      C_WHITE);
+
+
+  snprintf(
+      feels,
+      sizeof(feels),
+      "Sens %.1f C",
+      weather_.feels);
+
+
+  centered(
+      gfx,
+      feels,
+      166,
+      2,
+      C_GRAY);
+
+
+  snprintf(
+      hum,
+      sizeof(hum),
+      "Hum %d%%",
+      weather_.humidity);
+
+
+  snprintf(
+      wind,
+      sizeof(wind),
+      "Vent %.0f",
+      weather_.wind);
+
+
+  printAt(
+      gfx,
+      hum,
+      12,
+      197,
+      2,
+      C_WHITE);
+
+
+  printAt(
+      gfx,
+      wind,
+      133,
+      197,
+      2,
+      C_WHITE);
+
+
+  snprintf(
+      rain,
+      sizeof(rain),
+      "Pluja %.1f mm",
+      weather_.rain);
+
+
+  centered(
+      gfx,
+      rain,
+      220,
+      1,
+      C_GRAY);
 
 
   if (weather_.error) {
@@ -1183,7 +1207,6 @@ void ThemeMode::renderChristmas() {
       C_BLACK);
 
 
-
   centered(
       gfx,
       "NADAL",
@@ -1192,9 +1215,7 @@ void ThemeMode::renderChristmas() {
       C_WHITE);
 
 
-
   struct tm nowTm{};
-
 
 
   if (!localNow(nowTm)) {
@@ -1219,40 +1240,31 @@ void ThemeMode::renderChristmas() {
   }
 
 
-
   time_t now =
       time(nullptr);
-
 
 
   struct tm target =
       nowTm;
 
 
-
   target.tm_mon =
       11;
-
 
   target.tm_mday =
       25;
 
-
   target.tm_hour =
       0;
-
 
   target.tm_min =
       0;
 
-
   target.tm_sec =
       0;
 
-
   target.tm_isdst =
       -1;
-
 
 
   time_t christmas =
@@ -1260,11 +1272,9 @@ void ThemeMode::renderChristmas() {
           &target);
 
 
-
   if (
       now >=
-      christmas
-      +
+      christmas +
       24 * 3600) {
 
     target.tm_year +=
@@ -1277,7 +1287,6 @@ void ThemeMode::renderChristmas() {
   }
 
 
-
   long days =
       (long)ceil(
           difftime(
@@ -1287,14 +1296,11 @@ void ThemeMode::renderChristmas() {
           86400.0);
 
 
-
   if (days < 0)
     days = 0;
 
 
-
   char n[12];
-
 
 
   snprintf(
@@ -1302,7 +1308,6 @@ void ThemeMode::renderChristmas() {
       sizeof(n),
       "%ld",
       days);
-
 
 
   centered(
@@ -1316,7 +1321,6 @@ void ThemeMode::renderChristmas() {
       C_WHITE);
 
 
-
   centered(
       gfx,
       days == 1
@@ -1325,7 +1329,6 @@ void ThemeMode::renderChristmas() {
       145,
       3,
       C_GRAY);
-
 
 
   centered(
