@@ -1,6 +1,8 @@
 #pragma once
 #include "config.h"
+
 #if WITH_THEME
+
 #include "Mode.h"
 
 class ThemeMode : public DisplayMode {
@@ -15,20 +17,30 @@ class ThemeMode : public DisplayMode {
 
   const String& error() const { return error_; }
 
+  // JSON petit que el PRO oferira a l'ULTRA per HTTP local.
+  String bridgeJson() const;
+
   // Kept for compatibility with ThemeWeb.cpp. This personalized build does not
   // keep a parsed .stheme package in heap, so release() is intentionally a no-op.
   static constexpr uint32_t ParseFreeHeap = 6144;
   static constexpr uint32_t ParseLargestBlock = 1536;
   static constexpr uint32_t RequestFreeHeap = 8192;
   static constexpr uint32_t RequestLargestBlock = 3072;
+
   void release(uint32_t needFree = ParseFreeHeap,
                uint32_t needLargestBlock = ParseLargestBlock) {
-    (void)needFree; (void)needLargestBlock;
+    (void)needFree;
+    (void)needLargestBlock;
   }
+
   void freeForRequest() override {}
 
  private:
-  enum Page : uint8_t { PAGE_GLUCOSE = 0, PAGE_WEATHER = 1, PAGE_CHRISTMAS = 2 };
+  enum Page : uint8_t {
+    PAGE_GLUCOSE = 0,
+    PAGE_WEATHER = 1,
+    PAGE_CHRISTMAS = 2
+  };
 
   struct GlucoseData {
     int value = 0;
@@ -60,20 +72,24 @@ class ThemeMode : public DisplayMode {
   void renderChristmas();
 
   uint16_t glucoseColor(int value) const;
-  int8_t trendArrow() const; // -1 down, 0 flat/right, +1 up
+  int8_t trendArrow() const;
   void drawArrow(int8_t dir, int cx, int cy, uint16_t color);
 
   Page page_ = PAGE_GLUCOSE;
+
   uint32_t pageSinceMs_ = 0;
   uint32_t nextGlucoseMs_ = 0;
   uint32_t nextWeatherMs_ = 0;
   uint32_t lastClockMinute_ = 0xFFFFFFFF;
+
   bool needRender_ = true;
 
   GlucoseData glucose_;
   WeatherData weather_;
+
   String error_;
 };
 
 extern ThemeMode g_themeMode;
+
 #endif
