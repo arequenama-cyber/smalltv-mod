@@ -1,4 +1,5 @@
 #include "ThemeMode.h"
+
 #if WITH_THEME
 
 #include <Arduino.h>
@@ -19,6 +20,18 @@ constexpr uint32_t GLUCOSE_REFRESH_MS = 30000UL;
 constexpr uint32_t WEATHER_REFRESH_MS = 60000UL;
 constexpr uint32_t PAGE_DWELL_MS = 10000UL;
 
+#if defined(SMALLTV_FAMILY_ESP8266)
+
+// ULTRA:
+// cap HTTPS, cap TLS, cap BearSSL.
+// Només parla per HTTP local amb el PRO.
+const char* BRIDGE_URL =
+    "http://192.168.0.26/api/theme-bridge";
+
+#else
+
+// PRO:
+// és qui consulta Internet per HTTPS.
 const char* NIGHTSCOUT_URL =
     "https://elisa-nightscout.onrender.com/api/v2/properties/bgnow,delta,direction";
 
@@ -31,18 +44,12 @@ const char* WEATHER_URL =
     "&wind_speed_unit=kmh"
     "&timezone=Europe%2FMadrid";
 
-#if defined(SMALLTV_FAMILY_ESP8266)
-static TlsSession g_nightscoutSession;
-static TlsSession g_weatherSession;
-static uint32_t g_nextNetworkMs = 0;
-#endif
-
 enum JsonKind : uint8_t {
   JSON_GLUCOSE,
   JSON_WEATHER
 };
 
-bool getJson(
+bool getHttpsJson(
     const char* url,
     JsonKind kind,
     JsonDocument& doc,
@@ -53,40 +60,12 @@ bool getJson(
     return false;
   }
 
-  std::unique_ptr<NetClient> client;
-
-#if defined(SMALLTV_FAMILY_ESP8266)
-
-  const uint32_t freeHeap = ESP.getFreeHeap();
-  const uint32_t maxBlock = platformMaxFreeBlock();
-
-  if (freeHeap < 14500 || maxBlock < 8500) {
-    error = "low heap";
-    return false;
-  }
-
-  TlsSession* session =
-      (kind == JSON_GLUCOSE)
-          ? &g_nightscoutSession
-          : &g_weatherSession;
-
-  client.reset(
-      platformMakeSecureClient(
-          1024,
-          session,
-          512,
-          false));
-
-#else
-
-  client.reset(
+  std::unique_ptr<NetClient> client(
       platformMakeSecureClient(
           2048,
           nullptr,
           512,
           false));
-
-#endif
 
   if (!client) {
     error = "TLS client failed";
@@ -101,59 +80,35 @@ bool getJson(
 
   if (!http.begin(*client, String(url))) {
     error = "connect failed";
-    client.reset();
     return false;
   }
 
-  http.addHeader(
-      "Accept",
-      "application/json");
-
-  http.setUserAgent(
-      "smalltv-mod");
+  http.addHeader("Accept", "application/json");
+  http.setUserAgent("smalltv-mod");
 
 #if defined(SMALLTV_FAMILY_ESP32)
-
   http.setFollowRedirects(
       HTTPC_STRICT_FOLLOW_REDIRECTS);
-
 #endif
 
   const int code = http.GET();
 
   if (code < 200 || code >= 300) {
-
-    error =
-        "HTTP " +
-        String(code);
-
+    error = "HTTP " + String(code);
     http.end();
-    client.reset();
-
-#if defined(SMALLTV_FAMILY_ESP8266)
-
-    yield();
-    delay(20);
-
-#endif
-
     return false;
   }
 
   JsonDocument filter;
 
   if (kind == JSON_GLUCOSE) {
-
     filter["bgnow"]["last"] = true;
     filter["delta"]["display"] = true;
     filter["delta"]["mgdl"] = true;
     filter["direction"]["value"] = true;
-
   } else {
-
     JsonObject f =
-        filter["current"]
-            .to<JsonObject>();
+        filter["current"].to<JsonObject>();
 
     f["temperature_2m"] = true;
     f["apparent_temperature"] = true;
@@ -169,17 +124,8 @@ bool getJson(
           DeserializationOption::Filter(filter));
 
   http.end();
-  client.reset();
-
-#if defined(SMALLTV_FAMILY_ESP8266)
-
-  yield();
-  delay(40);
-
-#endif
 
   if (e) {
-
     error =
         "JSON parse failed: " +
         String(e.c_str());
@@ -188,10 +134,78 @@ bool getJson(
   }
 
   error = "";
-
   return true;
 }
 
+#endif
+
+
+#if defined(SMALLTV_FAMILY_ESP8266)
+
+bool getBridgeJson(
+    JsonDocument& doc,
+    String& error) {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    error = "WiFi offline";
+    return false;
+  }
+
+  NetClient client;
+  HTTPClient http;
+
+  http.setTimeout(5000);
+  http.setReuse(false);
+  http.useHTTP10(true);
+
+  if (!http.begin(
+          client,
+          String(BRIDGE_URL))) {
+
+    error = "PRO connect failed";
+    return false;
+  }
+
+  http.addHeader(
+      "Accept",
+      "application/json");
+
+  const int code =
+      http.GET();
+
+  if (code < 200 ||
+      code >= 300) {
+
+    error =
+        "PRO HTTP " +
+        String(code);
+
+    http.end();
+    return false;
+  }
+
+  DeserializationError e =
+      deserializeJson(
+          doc,
+          http.getStream());
+
+  http.end();
+
+  yield();
+
+  if (e) {
+    error =
+        "PRO JSON: " +
+        String(e.c_str());
+
+    return false;
+  }
+
+  error = "";
+  return true;
+}
+
+#endif
 
 
 void printAt(
@@ -207,7 +221,6 @@ void printAt(
   gfx->setCursor(x, y);
   gfx->print(text);
 }
-
 
 
 void centered(
@@ -227,7 +240,6 @@ void centered(
 }
 
 
-
 bool localNow(
     struct tm& t) {
 
@@ -245,7 +257,6 @@ bool localNow(
 }
 
 
-
 void drawWeatherSymbol(
     Arduino_GFX* gfx,
     int x,
@@ -259,119 +270,80 @@ void drawWeatherSymbol(
       rain > 0.05f) {
 
     gfx->fillCircle(
-        x - 10,
-        y,
-        8,
-        C_GRAY);
+        x - 10, y, 8, C_GRAY);
 
     gfx->fillCircle(
-        x,
-        y - 5,
-        10,
-        C_GRAY);
+        x, y - 5, 10, C_GRAY);
 
     gfx->fillCircle(
-        x + 11,
-        y,
-        8,
-        C_GRAY);
+        x + 11, y, 8, C_GRAY);
 
     gfx->fillRect(
-        x - 17,
-        y,
-        34,
-        8,
-        C_GRAY);
+        x - 17, y, 34, 8, C_GRAY);
 
     gfx->drawLine(
-        x - 10,
-        y + 13,
-        x - 13,
-        y + 19,
+        x - 10, y + 13,
+        x - 13, y + 19,
         C_BLUE);
 
     gfx->drawLine(
-        x,
-        y + 13,
-        x - 3,
-        y + 19,
+        x, y + 13,
+        x - 3, y + 19,
         C_BLUE);
 
     gfx->drawLine(
-        x + 10,
-        y + 13,
-        x + 7,
-        y + 19,
+        x + 10, y + 13,
+        x + 7, y + 19,
         C_BLUE);
 
     return;
   }
 
   gfx->fillCircle(
-      x,
-      y,
-      10,
+      x, y, 10, C_YELLOW);
+
+  gfx->drawLine(
+      x, y - 18,
+      x, y - 13,
       C_YELLOW);
 
   gfx->drawLine(
-      x,
-      y - 18,
-      x,
-      y - 13,
+      x, y + 13,
+      x, y + 18,
       C_YELLOW);
 
   gfx->drawLine(
-      x,
-      y + 13,
-      x,
-      y + 18,
+      x - 18, y,
+      x - 13, y,
       C_YELLOW);
 
   gfx->drawLine(
-      x - 18,
-      y,
-      x - 13,
-      y,
+      x + 13, y,
+      x + 18, y,
       C_YELLOW);
 
   gfx->drawLine(
-      x + 13,
-      y,
-      x + 18,
-      y,
+      x - 13, y - 13,
+      x - 9, y - 9,
       C_YELLOW);
 
   gfx->drawLine(
-      x - 13,
-      y - 13,
-      x - 9,
-      y - 9,
+      x + 9, y + 9,
+      x + 13, y + 13,
       C_YELLOW);
 
   gfx->drawLine(
-      x + 9,
-      y + 9,
-      x + 13,
-      y + 13,
+      x + 13, y - 13,
+      x + 9, y - 9,
       C_YELLOW);
 
   gfx->drawLine(
-      x + 13,
-      y - 13,
-      x + 9,
-      y - 9,
-      C_YELLOW);
-
-  gfx->drawLine(
-      x - 9,
-      y + 9,
-      x - 13,
-      y + 13,
+      x - 9, y + 9,
+      x - 13, y + 13,
       C_YELLOW);
 }
 
 }
-
 
 
 void ThemeMode::begin(
@@ -386,13 +358,10 @@ void ThemeMode::begin(
 #if defined(SMALLTV_FAMILY_ESP8266)
 
   nextGlucoseMs_ =
-      millis() + 4000;
+      millis() + 2000;
 
   nextWeatherMs_ =
-      millis() + 22000;
-
-  g_nextNetworkMs =
-      millis() + 3000;
+      0;
 
 #else
 
@@ -415,20 +384,13 @@ void ThemeMode::begin(
 }
 
 
-
 void ThemeMode::invalidate(
     const Settings&) {
 
 #if defined(SMALLTV_FAMILY_ESP8266)
 
   nextGlucoseMs_ =
-      millis() + 3000;
-
-  nextWeatherMs_ =
-      millis() + 22000;
-
-  g_nextNetworkMs =
-      millis() + 2500;
+      millis() + 1500;
 
 #else
 
@@ -445,14 +407,12 @@ void ThemeMode::invalidate(
 }
 
 
-
 void ThemeMode::wake(
     const Settings&) {
 
   needRender_ =
       true;
 }
-
 
 
 void ThemeMode::service(
@@ -463,42 +423,24 @@ void ThemeMode::service(
 
 #if defined(SMALLTV_FAMILY_ESP8266)
 
+  // ULTRA:
+  // una sola petició HTTP local cada 30 segons.
+  // Aquesta única petició actualitza glucosa i temps.
   if ((int32_t)(
           now -
-          g_nextNetworkMs) >= 0) {
+          nextGlucoseMs_) >= 0) {
 
-    if ((int32_t)(
-            now -
-            nextGlucoseMs_) >= 0) {
+    nextGlucoseMs_ =
+        now +
+        GLUCOSE_REFRESH_MS;
 
-      nextGlucoseMs_ =
-          now +
-          GLUCOSE_REFRESH_MS;
-
-      fetchGlucose();
-
-      g_nextNetworkMs =
-          millis() +
-          6000;
-
-    } else if ((int32_t)(
-                   now -
-                   nextWeatherMs_) >= 0) {
-
-      nextWeatherMs_ =
-          now +
-          WEATHER_REFRESH_MS;
-
-      fetchWeather();
-
-      g_nextNetworkMs =
-          millis() +
-          6000;
-    }
+    fetchGlucose();
   }
 
 #else
 
+  // PRO:
+  // continua consultant Nightscout i Open-Meteo directament.
   if ((int32_t)(
           now -
           nextGlucoseMs_) >= 0) {
@@ -572,13 +514,127 @@ void ThemeMode::service(
 }
 
 
-
 void ThemeMode::fetchGlucose() {
+
+#if defined(SMALLTV_FAMILY_ESP8266)
 
   JsonDocument doc;
   String err;
 
-  if (!getJson(
+  if (!getBridgeJson(
+          doc,
+          err)) {
+
+    glucose_.error =
+        true;
+
+    weather_.error =
+        true;
+
+    error_ =
+        "PRO: " + err;
+
+    needRender_ =
+        true;
+
+    return;
+  }
+
+  const bool gv =
+      doc["gv"] | false;
+
+  if (gv) {
+
+    glucose_.value =
+        doc["g"] | 0;
+
+    String dtext =
+        doc["d"] | "--";
+
+    strlcpy(
+        glucose_.deltaText,
+        dtext.c_str(),
+        sizeof(
+            glucose_.deltaText));
+
+    glucose_.delta =
+        dtext.toInt();
+
+    String direction =
+        doc["dir"] | "Flat";
+
+    strlcpy(
+        glucose_.direction,
+        direction.c_str(),
+        sizeof(
+            glucose_.direction));
+
+    glucose_.valid =
+        true;
+
+    glucose_.error =
+        false;
+
+    glucose_.lastOkMs =
+        millis();
+
+  } else {
+
+    glucose_.error =
+        true;
+  }
+
+  const bool wv =
+      doc["wv"] | false;
+
+  if (wv) {
+
+    weather_.temp =
+        doc["t"] | NAN;
+
+    weather_.feels =
+        doc["f"] | NAN;
+
+    weather_.humidity =
+        doc["h"] | -1;
+
+    weather_.wind =
+        doc["w"] | NAN;
+
+    weather_.rain =
+        doc["r"] | NAN;
+
+    weather_.valid =
+        !isnan(
+            weather_.temp);
+
+    weather_.error =
+        !weather_.valid;
+
+    if (weather_.valid) {
+
+      weather_.lastOkMs =
+          millis();
+    }
+
+  } else {
+
+    weather_.error =
+        true;
+  }
+
+  error_ =
+      "";
+
+  needRender_ =
+      true;
+
+#else
+
+  JsonDocument doc;
+  String err;
+
+  if (!getHttpsJson(
           NIGHTSCOUT_URL,
           JSON_GLUCOSE,
           doc,
@@ -682,16 +738,25 @@ void ThemeMode::fetchGlucose() {
     needRender_ =
         true;
   }
-}
 
+#endif
+}
 
 
 void ThemeMode::fetchWeather() {
 
+#if defined(SMALLTV_FAMILY_ESP8266)
+
+  // A l'ULTRA les dades meteorològiques
+  // arriben en la mateixa petició del pont.
+  return;
+
+#else
+
   JsonDocument doc;
   String err;
 
-  if (!getJson(
+  if (!getHttpsJson(
           WEATHER_URL,
           JSON_WEATHER,
           doc,
@@ -783,8 +848,9 @@ void ThemeMode::fetchWeather() {
     needRender_ =
         true;
   }
-}
 
+#endif
+}
 
 
 uint16_t ThemeMode::glucoseColor(
@@ -804,7 +870,6 @@ uint16_t ThemeMode::glucoseColor(
 
   return C_RED;
 }
-
 
 
 int8_t ThemeMode::trendArrow() const {
@@ -828,14 +893,10 @@ int8_t ThemeMode::trendArrow() const {
     return -1;
   }
 
-  if (glucose_.value > 180) {
-
-    return +1;
-  }
-
+  // Flat i qualsevol valor desconegut = fletxa recta.
+  // Mai deduïm la direcció a partir del valor de glucosa.
   return 0;
 }
-
 
 
 void ThemeMode::drawArrow(
@@ -959,7 +1020,6 @@ void ThemeMode::drawArrow(
 }
 
 
-
 void ThemeMode::render() {
 
   switch (page_) {
@@ -977,7 +1037,6 @@ void ThemeMode::render() {
       break;
   }
 }
-
 
 
 void ThemeMode::renderGlucose() {
@@ -1110,7 +1169,6 @@ void ThemeMode::renderGlucose() {
         C_RED);
   }
 }
-
 
 
 void ThemeMode::renderWeather() {
@@ -1295,7 +1353,6 @@ void ThemeMode::renderWeather() {
         C_RED);
   }
 }
-
 
 
 void ThemeMode::renderChristmas() {
