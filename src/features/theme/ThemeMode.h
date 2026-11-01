@@ -4,6 +4,7 @@
 #if WITH_THEME
 
 #include "Mode.h"
+#include <math.h>
 
 class ThemeMode : public DisplayMode {
  public:
@@ -17,11 +18,52 @@ class ThemeMode : public DisplayMode {
 
   const String& error() const { return error_; }
 
-  // JSON petit que el PRO oferira a l'ULTRA per HTTP local.
-  String bridgeJson() const;
+  // JSON petit que el PRO ofereix a l'ULTRA per HTTP local.
+  String bridgeJson() const {
+    String out;
+    out.reserve(240);
 
-  // Kept for compatibility with ThemeWeb.cpp. This personalized build does not
-  // keep a parsed .stheme package in heap, so release() is intentionally a no-op.
+    out = F("{\"g\":");
+    out += glucose_.value;
+
+    out += F(",\"d\":\"");
+    out += glucose_.deltaText;
+    out += '"';
+
+    out += F(",\"dir\":\"");
+    out += glucose_.direction;
+    out += '"';
+
+    out += F(",\"gv\":");
+    out += glucose_.valid ? F("true") : F("false");
+
+    out += F(",\"t\":");
+    if (isnan(weather_.temp)) out += F("null");
+    else out += String(weather_.temp, 1);
+
+    out += F(",\"f\":");
+    if (isnan(weather_.feels)) out += F("null");
+    else out += String(weather_.feels, 1);
+
+    out += F(",\"h\":");
+    out += weather_.humidity;
+
+    out += F(",\"w\":");
+    if (isnan(weather_.wind)) out += F("null");
+    else out += String(weather_.wind, 1);
+
+    out += F(",\"r\":");
+    if (isnan(weather_.rain)) out += F("null");
+    else out += String(weather_.rain, 1);
+
+    out += F(",\"wv\":");
+    out += weather_.valid ? F("true") : F("false");
+
+    out += '}';
+
+    return out;
+  }
+
   static constexpr uint32_t ParseFreeHeap = 6144;
   static constexpr uint32_t ParseLargestBlock = 1536;
   static constexpr uint32_t RequestFreeHeap = 8192;
